@@ -33,25 +33,17 @@ server.registerTool(
     title: "Search Documents",
     description: "Full-text keyword search in a MeiliSearch index",
     inputSchema: {
-      indexUid: z.string().describe("The unique identifier of the index to search"),
       query: z.string().describe("The search query string"),
       limit: z.number().optional().describe("Maximum number of results to return (default: 20)"),
       offset: z.number().optional().describe("Number of results to skip (default: 0)"),
-      filter: z.string().optional().describe("Filter expression (e.g., 'genre = horror AND director = Jordan')"),
-      sort: z.array(z.string()).optional().describe("Array of sort rules (e.g., ['price:asc', 'title:desc'])"),
-      attributesToRetrieve: z.array(z.string()).optional().describe("Attributes to include in results"),
-      attributesToHighlight: z.array(z.string()).optional().describe("Attributes to highlight in results"),
     },
   },
   async (args) => {
+    console.log(`Received search request with query: ${args.query}`);
     const index = client.index(MEILI_INDEX_NAME);
     const results = await index.search(args.query, {
       limit: args.limit,
       offset: args.offset,
-      filter: args.filter,
-      sort: args.sort,
-      attributesToRetrieve: args.attributesToRetrieve,
-      attributesToHighlight: args.attributesToHighlight,
     });
     return {
       content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
@@ -74,11 +66,22 @@ app.use(
   cors({
     origin: true, // Allow any origin for public server
     methods: ['GET', 'POST'],
-    allowedHeaders: 'Authorization, Origin, Content-Type, Accept, MCP-Session-Id, MCP-Protocol-Version',
+    allowedHeaders: "Authorization, Origin, Content-Type, Accept, *",
   })
 );
 
 app.post('/', async (req, res) => {
+  try {
+    await statelessTransport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error('Error handling MCP request:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+app.post('/mcp', async (req, res) => {
   try {
     await statelessTransport.handleRequest(req, res, req.body);
   } catch (error) {
