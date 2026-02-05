@@ -2,7 +2,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { Meilisearch } from "meilisearch";
 import { z } from "zod";
 import cors from "cors";
@@ -55,13 +54,8 @@ function createServer(): McpServer {
   return srv;
 }
 
-const MCP_HOST = process.env.MCP_HOST || "localhost";
-
-// Set up Express with StreamableHTTPServerTransport
-const app = createMcpExpressApp({ 
-  host: '0.0.0.0', // Bind to all interfaces for public access
-  allowedHosts: [MCP_HOST], // DNS rebinding protection for the deployment domain
-});
+// Set up Express
+const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
