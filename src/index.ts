@@ -57,7 +57,6 @@ server.registerTool(
     };
   }
 );
-
   
 // Stateless mode - explicitly set session ID to undefined
 const statelessTransport = new StreamableHTTPServerTransport({
@@ -69,16 +68,16 @@ await server.connect(statelessTransport);
 // Set up Express server to handle MCP requests
 const app = express();
 app.use(express.json());
+
 app.use(
   cors({
-    origin: true,
-    methods: "*",
-    allowedHeaders: "Authorization, Origin, Content-Type, Accept, *",
+    origin: true, // Allow any origin for public server
+    methods: ['GET', 'POST'],
+    allowedHeaders: 'Authorization, Origin, Content-Type, Accept, MCP-Session-Id, MCP-Protocol-Version',
   })
 );
 
-app.options("*", cors());
-app.post('/mcp', (req, res) => {
+app.post('/', (req, res) => {
   statelessTransport.handleRequest(req, res, req.body);
 });
 
@@ -89,4 +88,5 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`MCP server is running on port ${PORT}`);
+  console.log(`Access at: https://docs.near.org/mcp`);
 });
