@@ -10,6 +10,7 @@ import cors from "cors";
 // Create MeiliSearch client from environment variables
 const MEILISEARCH_HOST = process.env.MEILISEARCH_HOST || "http://127.0.0.1:7700";
 const MEILISEARCH_API_KEY = process.env.MEILISEARCH_API_KEY || "";
+const MEILI_INDEX_NAME = process.env.MEILI_INDEX_NAME || "near-docs";
 
 const client = new Meilisearch({
   host: MEILISEARCH_HOST,
@@ -43,7 +44,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    const index = client.index(args.indexUid);
+    const index = client.index(MEILI_INDEX_NAME);
     const results = await index.search(args.query, {
       limit: args.limit,
       offset: args.offset,
