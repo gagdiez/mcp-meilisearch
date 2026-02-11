@@ -35,6 +35,7 @@ export function createServer(): McpServer {
       console.log(`Received search request with query: ${args.query}`);
       const index = meiliClient.index(MEILI_INDEX_NAME);
       const results = await index.search(args.query, {
+        hybrid: { semanticRatio: 0.7, embedder: "default" },
         limit: args.limit,
         offset: args.offset,
       });

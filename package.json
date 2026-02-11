@@ -20,11 +20,11 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "groq-sdk": "^0.37.0",
     "meilisearch": "^0.55.0",
     "zod": "^4.3.6"
   },
