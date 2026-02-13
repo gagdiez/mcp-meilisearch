@@ -8,10 +8,25 @@ const anthropic = ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: ANTHROPIC_API_KEY })
   : null;
 
-const threads = new Map<
-  string,
-  Array<Anthropic.MessageParam>
->();
+interface ThreadData {
+  messages: Array<Anthropic.MessageParam>;
+  lastAccess: number;
+}
+
+const threads = new Map<string, ThreadData>();
+const MAX_HISTORY_MESSAGES = 4;
+const THREAD_TTL_MS = 30 * 60 * 1000;
+
+function cleanExpiredThreads() {
+  const now = Date.now();
+  for (const [key, thread] of threads) {
+    if (now - thread.lastAccess > THREAD_TTL_MS) {
+      threads.delete(key);
+    }
+  }
+}
+
+setInterval(cleanExpiredThreads, 5 * 60 * 1000);
 
 const SYSTEM_PROMPT = `You are an expert assistant for NEAR Protocol documentation.
 Your role is to help developers understand and build on NEAR Protocol based on the official documentation.
@@ -83,7 +98,9 @@ export async function chatHandler(req: Request, res: Response) {
 
     let conversationHistory: Array<Anthropic.MessageParam> = [];
     if (threadId && threads.has(threadId)) {
-      conversationHistory = threads.get(threadId)!;
+      const thread = threads.get(threadId)!;
+      thread.lastAccess = Date.now();
+      conversationHistory = thread.messages;
     }
 
     const messages: Anthropic.MessageParam[] = [
@@ -94,7 +111,13 @@ export async function chatHandler(req: Request, res: Response) {
     const mcpConfig = {
       model: "claude-sonnet-4-5-20250929",
       betas: ["mcp-client-2025-11-20"],
-      system: SYSTEM_PROMPT,
+      system: [
+        {
+          type: "text",
+          text: SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       mcp_servers: [
         {
           type: "url",
@@ -106,6 +129,7 @@ export async function chatHandler(req: Request, res: Response) {
         {
           type: "mcp_toolset",
           mcp_server_name: "near-docs",
+          cache_control: { type: "ephemeral" },
         },
       ],
       temperature: 0.1,
@@ -154,12 +178,12 @@ export async function chatHandler(req: Request, res: Response) {
     const assistantMessage = textBlock ? textBlock.text : "No response generated.";
 
     const newThreadId = threadId || `thread_${Date.now()}`;
-    const updatedHistory: Anthropic.MessageParam[] = [
+    const updatedMessages: Anthropic.MessageParam[] = [
       ...conversationHistory,
-      { role: "user", content: userMessage },
-      { role: "assistant", content: assistantMessage },
-    ];
-    threads.set(newThreadId, updatedHistory);
+      { role: "user" as const, content: userMessage },
+      { role: "assistant" as const, content: assistantMessage },
+    ].slice(-MAX_HISTORY_MESSAGES);
+    threads.set(newThreadId, { messages: updatedMessages, lastAccess: Date.now() });
 
     if (threads.size > 100) {
       const oldestKey = threads.keys().next().value;

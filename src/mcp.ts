@@ -1,16 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Meilisearch } from "meilisearch";
 import { z } from "zod";
+import { meiliClient } from "./searchClient.js";
 
-const MEILI_HOST = process.env.MEILI_HOST || "http://127.0.0.1:7700";
-const MEILI_API_KEY = process.env.MEILI_API_KEY || "";
 const MEILI_INDEX_NAME = process.env.MEILI_INDEX_NAME || "near-docs";
-
-
-const meiliClient = new Meilisearch({
-  host: MEILI_HOST,
-  apiKey: MEILI_API_KEY,
-});
 
 export function createServer(): McpServer {
   const srv = new McpServer({
