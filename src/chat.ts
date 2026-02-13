@@ -1,29 +1,41 @@
 import type { Request, Response } from "express";
-import Groq from "groq-sdk";
-import { Meilisearch } from "meilisearch";
+import Anthropic from "@anthropic-ai/sdk";
 
+const MCP_SERVER_URL = process.env.MCP_SERVER_URL;
 
-const MEILI_HOST = process.env.MEILI_HOST || "http://127.0.0.1:7700";
-const MEILI_API_KEY = process.env.MEILI_SEARCH_KEY || "";
-const MEILI_INDEX_NAME = process.env.MEILI_INDEX_NAME || "near-docs";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const anthropic = ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: ANTHROPIC_API_KEY })
+  : null;
 
-const meiliClient = new Meilisearch({
-  host: MEILI_HOST,
-  apiKey: MEILI_API_KEY,
-});
+interface ThreadData {
+  messages: Array<Anthropic.MessageParam>;
+  lastAccess: number;
+}
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-const groq = GROQ_API_KEY ? new Groq({ apiKey: GROQ_API_KEY }) : null;
+const threads = new Map<string, ThreadData>();
+const MAX_HISTORY_MESSAGES = 4;
+const THREAD_TTL_MS = 30 * 60 * 1000;
 
-const chatIndex = meiliClient.index(MEILI_INDEX_NAME);
+function cleanExpiredThreads() {
+  const now = Date.now();
+  for (const [key, thread] of threads) {
+    if (now - thread.lastAccess > THREAD_TTL_MS) {
+      threads.delete(key);
+    }
+  }
+}
 
-const threads = new Map<string, Array<{ role: string; content: string }>>();
+setInterval(cleanExpiredThreads, 5 * 60 * 1000);
 
 const SYSTEM_PROMPT = `You are an expert assistant for NEAR Protocol documentation.
 Your role is to help developers understand and build on NEAR Protocol based on the official documentation.
 
+You have access to a search tool that lets you query the NEAR documentation. Use it to find relevant information before answering questions.
+
 ## Response guidelines
-- Answer questions based ONLY on the provided documentation context. Do not invent or assume information
+- Always search the documentation before answering technical questions
+- Answer questions based ONLY on the documentation results. Do not invent or assume information
 - If the documentation doesn't cover the topic, say so clearly and suggest related topics that might help
 - Always answer in the same language the user writes in
 
@@ -42,43 +54,40 @@ Your role is to help developers understand and build on NEAR Protocol based on t
 - If the question is unrelated to NEAR Protocol, politely redirect the user
 - For ambiguous questions, ask for clarification before answering`;
 
-async function searchDocs(query: string) {
-  try {
-    const results = await chatIndex.search(query, {
-      hybrid: {
-        semanticRatio: 0.7,
-        embedder: "default",
-      },
-      limit: 5,
-    });
-    return results.hits;
-  } catch (error: any) {
-    console.error("Search error:", error.message);
-    return [];
+function collectSources(
+  content: any[],
+  sources: Array<{ title: string; path: string }>
+) {
+  for (const block of content) {
+    if (block.type === "mcp_tool_result" && !block.is_error) {
+      try {
+        let raw: string;
+        if (typeof block.content === "string") {
+          raw = block.content;
+        } else if (Array.isArray(block.content)) {
+          raw = block.content
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join("");
+        } else {
+          continue;
+        }
+        
+        const parsed = JSON.parse(raw);
+        if (parsed.hits) {
+          for (const hit of parsed.hits.slice(0, 3)) {
+            if (hit.title || hit.path) {
+              sources.push({ title: hit.title || "Untitled", path: hit.path || "" });
+            }
+          }
+        }
+      } catch {
+      }
+    }
   }
-}
-
-function buildContext(docs: any[]) {
-  if (docs.length === 0) {
-    return "No relevant documentation found.";
-  }
-
-  return docs
-    .map((doc) => {
-      const title = doc.title || "Untitled";
-      const content = doc.content || "";
-      const path = doc.path || "";
-      return `### ${title}\nPath: ${path}\n\n${content.substring(0, 2000)}`;
-    })
-    .join("\n\n---\n\n");
 }
 
 export async function chatHandler(req: Request, res: Response) {
-  if (!groq) {
-    res.status(503).json({ error: "GROQ_API_KEY is not configured" });
-    return;
-  }
-
   try {
     const { messages: userMessage, threadId } = req.body;
 
@@ -87,61 +96,108 @@ export async function chatHandler(req: Request, res: Response) {
       return;
     }
 
-    let conversationHistory: Array<{ role: string; content: string }> = [];
+    let conversationHistory: Array<Anthropic.MessageParam> = [];
     if (threadId && threads.has(threadId)) {
-      conversationHistory = threads.get(threadId)!;
+      const thread = threads.get(threadId)!;
+      thread.lastAccess = Date.now();
+      conversationHistory = thread.messages;
     }
 
-    const docs = await searchDocs(userMessage);
-    const context = buildContext(docs);
-
-    const groqMessages = [
-      {
-        role: "system" as const,
-        content: `${SYSTEM_PROMPT}\n\n## Documentation Context:\n\n${context}`,
-      },
-      ...conversationHistory.slice(-6).map((m) => ({
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      })),
-      {
-        role: "user" as const,
-        content: userMessage,
-      },
+    const messages: Anthropic.MessageParam[] = [
+      ...conversationHistory.slice(-4),
+      { role: "user", content: userMessage },
     ];
 
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: groqMessages,
-      temperature: 0.3,
+    const mcpConfig = {
+      model: "claude-sonnet-4-5-20250929",
+      betas: ["mcp-client-2025-11-20"],
+      system: [
+        {
+          type: "text",
+          text: SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      mcp_servers: [
+        {
+          type: "url",
+          url: MCP_SERVER_URL,
+          name: "near-docs",
+        },
+      ],
+      tools: [
+        {
+          type: "mcp_toolset",
+          mcp_server_name: "near-docs",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      temperature: 0.1,
       max_tokens: 1024,
+    };
+
+    const sources: Array<{ title: string; path: string }> = [];
+    const MAX_ITERATIONS = 5;
+
+    let response = await (anthropic as any).beta.messages.create({
+      ...mcpConfig,
+      messages,
     });
 
-    const assistantMessage =
-      completion.choices[0]?.message?.content || "No response generated.";
+    console.log({
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+      cache_read_tokens: response.usage.cache_read_input_tokens || 0,
+      cache_creation_tokens: response.usage.cache_creation_input_tokens || 0,
+    });
+
+    let iterations = 0;
+    while (response.stop_reason !== "end_turn" && iterations < MAX_ITERATIONS) {
+      iterations++;
+
+      collectSources(response.content, sources);
+
+      messages.push({ role: "assistant", content: response.content });
+
+      response = await (anthropic as any).beta.messages.create({
+        ...mcpConfig,
+        messages,
+      });
+
+      console.log({
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+        cache_read_tokens: response.usage.cache_read_input_tokens || 0,
+        cache_creation_tokens: response.usage.cache_creation_input_tokens || 0,
+      });
+    }
+
+    collectSources(response.content, sources);
+
+    const textBlock = response.content.find((block: any) => block.type === "text");
+    const assistantMessage = textBlock ? textBlock.text : "No response generated.";
 
     const newThreadId = threadId || `thread_${Date.now()}`;
-    const updatedHistory = [
+    const updatedMessages: Anthropic.MessageParam[] = [
       ...conversationHistory,
-      { role: "user", content: userMessage },
-      { role: "assistant", content: assistantMessage },
-    ];
-    threads.set(newThreadId, updatedHistory);
+      { role: "user" as const, content: userMessage },
+      { role: "assistant" as const, content: assistantMessage },
+    ].slice(-MAX_HISTORY_MESSAGES);
+    threads.set(newThreadId, { messages: updatedMessages, lastAccess: Date.now() });
 
     if (threads.size > 100) {
       const oldestKey = threads.keys().next().value;
       if (oldestKey) threads.delete(oldestKey);
     }
 
-    const sources = docs.slice(0, 3).map((doc: any) => ({
-      title: doc.title,
-      path: doc.path,
-    }));
+    const uniqueSources = sources.filter(
+      (s, i, arr) => arr.findIndex((x) => x.path === s.path) === i
+    );
 
     res.json({
       message: assistantMessage,
       threadId: newThreadId,
-      sources,
+      sources: uniqueSources,
     });
   } catch (error) {
     console.error("Chat error:", error);
