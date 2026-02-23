@@ -113,7 +113,7 @@ export async function chatHandler(req: Request, res: Response) {
     const userContent = `${historyContext}${searchContext}\n\n${userMessage}`;
 
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-5-20250929",
+      model: "claude-haiku-4-5",
       max_tokens: 1024,
       temperature: 0,
       system: [

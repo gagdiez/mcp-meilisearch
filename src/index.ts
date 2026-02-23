@@ -5,7 +5,7 @@ import express from "express";
 import cors from "cors";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer } from "./mcp.js";
-import { chatHandler } from "./chat-optimal.js";
+import { chatHandler } from "./chat.js";
 
 const app = express();
 app.use(cors({ origin: "*" }));

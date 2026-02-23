@@ -1,32 +1,16 @@
 import type { Request, Response } from "express";
 import Anthropic from "@anthropic-ai/sdk";
-
-const MCP_SERVER_URL = process.env.MCP_SERVER_URL;
+import { searchNearDocs } from "./searchClient.js";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const anthropic = ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: ANTHROPIC_API_KEY })
   : null;
 
-interface ThreadData {
-  messages: Array<Anthropic.MessageParam>;
-  lastAccess: number;
+interface HistoryMessage {
+  role: "user" | "assistant";
+  content: string;
 }
-
-const threads = new Map<string, ThreadData>();
-const MAX_HISTORY_MESSAGES = 4;
-const THREAD_TTL_MS = 30 * 60 * 1000;
-
-function cleanExpiredThreads() {
-  const now = Date.now();
-  for (const [key, thread] of threads) {
-    if (now - thread.lastAccess > THREAD_TTL_MS) {
-      threads.delete(key);
-    }
-  }
-}
-
-setInterval(cleanExpiredThreads, 5 * 60 * 1000);
 
 const SYSTEM_PROMPT = `You are an expert assistant for NEAR Protocol documentation.
 Your role is to help developers understand and build on NEAR Protocol based on the official documentation.
@@ -54,84 +38,55 @@ You have access to a search tool that lets you query the NEAR documentation. Use
 - If the question is unrelated to NEAR Protocol, politely redirect the user
 - For ambiguous questions, ask for clarification before answering`;
 
+const SEARCH_TOOL: Anthropic.Tool = {
+  name: "search_near_docs",
+  description:
+    "Search the NEAR Protocol documentation for relevant information. Use this to find accurate, up-to-date information before answering technical questions.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      query: {
+        type: "string",
+        description: "The search query to find relevant documentation",
+      },
+      limit: {
+        type: "number",
+        description: "Maximum number of results to return (default: 5)",
+      },
+    },
+    required: ["query"],
+  },
+};
+
 function collectSources(
-  content: any[],
+  results: Array<{ title: string; path: string }>,
   sources: Array<{ title: string; path: string }>
 ) {
-  for (const block of content) {
-    if (block.type === "mcp_tool_result" && !block.is_error) {
-      try {
-        let raw: string;
-        if (typeof block.content === "string") {
-          raw = block.content;
-        } else if (Array.isArray(block.content)) {
-          raw = block.content
-            .filter((b: any) => b.type === "text")
-            .map((b: any) => b.text)
-            .join("");
-        } else {
-          continue;
-        }
-        
-        const parsed = JSON.parse(raw);
-        if (parsed.hits) {
-          for (const hit of parsed.hits.slice(0, 3)) {
-            if (hit.title || hit.path) {
-              sources.push({ title: hit.title || "Untitled", path: hit.path || "" });
-            }
-          }
-        }
-      } catch {
-      }
+  for (const result of results) {
+    if (result.title || result.path) {
+      sources.push({ title: result.title || "Untitled", path: result.path || "" });
     }
   }
 }
 
 export async function chatHandler(req: Request, res: Response) {
   try {
-    const { messages: userMessage, threadId } = req.body;
+    const { message, history = [] }: { message: string; history: HistoryMessage[] } = req.body;
 
-    if (!userMessage) {
+    if (!message) {
       res.status(400).json({ error: "Message is required" });
       return;
     }
 
-    let conversationHistory: Array<Anthropic.MessageParam> = [];
-    if (threadId && threads.has(threadId)) {
-      const thread = threads.get(threadId)!;
-      thread.lastAccess = Date.now();
-      conversationHistory = thread.messages;
-    }
-
     const messages: Anthropic.MessageParam[] = [
-      ...conversationHistory.slice(-4),
-      { role: "user", content: userMessage },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: message },
     ];
 
-    const mcpConfig = {
-      model: "claude-sonnet-4-5-20250929",
-      betas: ["mcp-client-2025-11-20"],
-      system: [
-        {
-          type: "text",
-          text: SYSTEM_PROMPT,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      mcp_servers: [
-        {
-          type: "url",
-          url: MCP_SERVER_URL,
-          name: "near-docs",
-        },
-      ],
-      tools: [
-        {
-          type: "mcp_toolset",
-          mcp_server_name: "near-docs",
-          cache_control: { type: "ephemeral" },
-        },
-      ],
+    const requestConfig = {
+      model: "claude-haiku-4-5",
+      system: SYSTEM_PROMPT,
+      tools: [SEARCH_TOOL],
       temperature: 0.1,
       max_tokens: 1024,
     };
@@ -139,56 +94,62 @@ export async function chatHandler(req: Request, res: Response) {
     const sources: Array<{ title: string; path: string }> = [];
     const MAX_ITERATIONS = 5;
 
-    let response = await (anthropic as any).beta.messages.create({
-      ...mcpConfig,
+    let response = await anthropic!.messages.create({
+      ...requestConfig,
       messages,
     });
 
     console.log({
       input_tokens: response.usage.input_tokens,
       output_tokens: response.usage.output_tokens,
-      cache_read_tokens: response.usage.cache_read_input_tokens || 0,
-      cache_creation_tokens: response.usage.cache_creation_input_tokens || 0,
     });
 
     let iterations = 0;
-    while (response.stop_reason !== "end_turn" && iterations < MAX_ITERATIONS) {
+    while (response.stop_reason === "tool_use" && iterations < MAX_ITERATIONS) {
       iterations++;
 
-      collectSources(response.content, sources);
+      const toolUseBlocks = response.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+      );
 
       messages.push({ role: "assistant", content: response.content });
 
-      response = await (anthropic as any).beta.messages.create({
-        ...mcpConfig,
+      const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
+        toolUseBlocks.map(async (toolUse) => {
+          if (toolUse.name === "search_near_docs") {
+            const input = toolUse.input as { query: string; limit?: number };
+            const results = await searchNearDocs(input.query, input.limit ?? 5);
+            collectSources(results.slice(0, 3), sources);
+            return {
+              type: "tool_result" as const,
+              tool_use_id: toolUse.id,
+              content: JSON.stringify(results),
+            };
+          }
+          return {
+            type: "tool_result" as const,
+            tool_use_id: toolUse.id,
+            is_error: true,
+            content: `Unknown tool: ${toolUse.name}`,
+          };
+        })
+      );
+
+      messages.push({ role: "user", content: toolResults });
+
+      response = await anthropic!.messages.create({
+        ...requestConfig,
         messages,
       });
 
       console.log({
         input_tokens: response.usage.input_tokens,
         output_tokens: response.usage.output_tokens,
-        cache_read_tokens: response.usage.cache_read_input_tokens || 0,
-        cache_creation_tokens: response.usage.cache_creation_input_tokens || 0,
       });
     }
 
-    collectSources(response.content, sources);
-
-    const textBlock = response.content.find((block: any) => block.type === "text");
+    const textBlock = response.content.find((block): block is Anthropic.TextBlock => block.type === "text");
     const assistantMessage = textBlock ? textBlock.text : "No response generated.";
-
-    const newThreadId = threadId || `thread_${Date.now()}`;
-    const updatedMessages: Anthropic.MessageParam[] = [
-      ...conversationHistory,
-      { role: "user" as const, content: userMessage },
-      { role: "assistant" as const, content: assistantMessage },
-    ].slice(-MAX_HISTORY_MESSAGES);
-    threads.set(newThreadId, { messages: updatedMessages, lastAccess: Date.now() });
-
-    if (threads.size > 100) {
-      const oldestKey = threads.keys().next().value;
-      if (oldestKey) threads.delete(oldestKey);
-    }
 
     const uniqueSources = sources.filter(
       (s, i, arr) => arr.findIndex((x) => x.path === s.path) === i
@@ -196,7 +157,6 @@ export async function chatHandler(req: Request, res: Response) {
 
     res.json({
       message: assistantMessage,
-      threadId: newThreadId,
       sources: uniqueSources,
     });
   } catch (error) {
