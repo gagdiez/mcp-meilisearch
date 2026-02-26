@@ -10,13 +10,15 @@ interface HistoryMessage {
   content: string;
 }
 
-const SYSTEM_PROMPT = `You answer questions about NEAR Protocol using the available tools.
+const SYSTEM_PROMPT = `You answer questions about NEAR Protocol using the tools searchDocs and fetchDoc to find relevant information in the NEAR documentation.
 
 Rules:
 - Keep answers concise.
-- Use ONLY information from <search_results>. NEVER invent APIs, methods, or code not present in the docs.
+- Use ONLY information from tools results. NEVER invent APIs, methods, or code not present in the docs.
+- If the user requests a specific doc, fetch it to find the answer. Otherwise, search the docs for relevant information.
 - If the search returns docs that are not relevant, you might need to search with different keywords.
-- If results are not enough, call fetchDoc with a specific path ending in .md (e.g. "tutorials/quickstart.md").
+- Explain in one line what you will do if you use a tool (e.g. "Let me search the docs" or "Let me fetch that doc"), include a new line after that.
+- You might not need to use both tools, but you should use at least one to find the answer.
 - If after using the tools you can't find the answer, say "I couldn't find an answer in the docs."
 - Use Markdown with code blocks, headings, and bold for key terms.
 - Include code examples and CLI commands from the docs when relevant.
@@ -33,21 +35,14 @@ export async function chatHandler(req: Request, res: Response) {
       return;
     }
 
-    const initialResults = await searchNearDocs(message);
-    const initialContext = initialResults
-      .map((r) => `<doc title="${r.title}" path="${r.path}">\n${r.content}\n</doc>`)
-      .join("\n");
-
-    const sources = initialResults
-      .filter((r) => r.path)
-      .map((r) => ({ title: r.title, path: r.path }));
+    let sources: {title: string; path: string;}[] = [];
 
     const result = streamText({
       model: anthropic("claude-haiku-4-5"),
       system: SYSTEM_PROMPT,
       messages: [
         ...history.map((m) => ({ role: m.role, content: m.content })),
-        { role: "user", content: `<search_results>\n${initialContext}\n</search_results>\n\n${message}` },
+        { role: "user", content: message },
       ],
       tools: {
         searchDocs: tool({
@@ -68,7 +63,7 @@ export async function chatHandler(req: Request, res: Response) {
         fetchDoc: tool({
           description: "Fetch a full NEAR Protocol documentation page as Markdown.",
           inputSchema: z.object({
-            path: z.string().describe("Doc path ending in .md, e.g. 'tutorials/quickstart.md'"),
+            path: z.string().describe("Doc PATH ending in .md, e.g. 'tutorials/quickstart.md' - not the full URL"),
           }),
           execute: async ({ path }) => fetchNearDoc(path),
         }),

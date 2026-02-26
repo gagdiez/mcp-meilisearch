@@ -24,12 +24,35 @@ near create-account myapp.testnet --useFaucet
 
 See [NEAR Protocol Overview](docs/concepts/overview) for more details.`;
 
+const MOCK_PRELUDE_CHUNKS = [
+  {
+    text: "Let me search the docs for information on creating a NEAR account",
+    pauseAfterMs: 350,
+  },
+  {
+    text: "Let me fetch the full guide",
+    pauseAfterMs: 300,
+  },
+];
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function sseChunk(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`;
+}
+
+async function streamTextBlock(res: Response, id: string, text: string, tokenDelayMs: number): Promise<void> {
+  res.write(sseChunk({ type: "text-start", id }));
+
+  const words = text.split(" ");
+  for (const word of words) {
+    res.write(sseChunk({ type: "text-delta", id, delta: word + " " }));
+    await sleep(tokenDelayMs);
+  }
+
+  res.write(sseChunk({ type: "text-end", id }));
 }
 
 export async function chatMockHandler(req: Request, res: Response) {
@@ -47,16 +70,17 @@ export async function chatMockHandler(req: Request, res: Response) {
   res.setHeader("X-Accel-Buffering", "no");
 
   res.write(sseChunk({ type: "start", messageId: "mock-message-1" }));
-  res.write(sseChunk({ type: "start-step" }));
-  res.write(sseChunk({ type: "text-start", id: "text-1" }));
 
-  const words = MOCK_RESPONSE.split(" ");
-  for (const word of words) {
-    res.write(sseChunk({ type: "text-delta", id: "text-1", delta: word + " " }));
-    await sleep(30);
+  for (let index = 0; index < MOCK_PRELUDE_CHUNKS.length; index += 1) {
+    const chunk = MOCK_PRELUDE_CHUNKS[index];
+    res.write(sseChunk({ type: "start-step" }));
+    await streamTextBlock(res, `text-prelude-${index + 1}`, chunk.text, 16);
+    res.write(sseChunk({ type: "finish-step" }));
+    await sleep(chunk.pauseAfterMs);
   }
 
-  res.write(sseChunk({ type: "text-end", id: "text-1" }));
+  res.write(sseChunk({ type: "start-step" }));
+  await streamTextBlock(res, "text-1", MOCK_RESPONSE, 30);
   res.write(sseChunk({ type: "finish-step" }));
   res.write(
     sseChunk({
