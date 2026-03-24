@@ -22,6 +22,10 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
     "@modelcontextprotocol/sdk": "^1.25.3",
+    "@near-js/accounts": "^2.5.1",
+    "@near-js/providers": "^2.5.1",
+    "@near-js/signers": "^2.5.1",
+    "@near-js/tokens": "^2.5.1",
     "ai": "^6.0.97",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",

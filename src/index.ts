@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer } from "./mcp.js";
 import { chatHandler } from "./chat.js";
 import { chatMockHandler } from "./chatMock.js";
+import { faucetHandler } from "./faucet.js";
 
 const app = express();
 app.use(cors({ origin: "*" }));
@@ -43,6 +44,9 @@ app.post("/", async (req, res) => {
 // Chat endpoint
 app.post("/api/chat", chatHandler);
 app.post("/api/chat/mock", chatMockHandler);
+
+// Faucet endpoint
+app.post("/api/faucet", faucetHandler);
 
 const PORT = process.env.PORT || 3000;
 
