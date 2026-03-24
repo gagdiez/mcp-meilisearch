@@ -9,7 +9,7 @@ app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 // Chat endpoint
-app.post("/api/chat", faucetHandler);
+app.post("/api/faucet", faucetHandler);
 
 const PORT = process.env.PORT || 3000;
 
